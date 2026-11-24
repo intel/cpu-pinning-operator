@@ -145,8 +145,8 @@ kubectl get noderesourcetopology <node> -o yaml
 The repo ships an agent skill, [`use-cpu-pinning-operator`](skills/use-cpu-pinning-operator/SKILL.md).
 It takes an agent from "nothing installed" to "this pod runs on its own cores": it checks
 prerequisites, installs with Helm, picks pods with a `BalloonPinningPolicy`, verifies pinning
-and troubleshoots. For Claude Code, copy the folder into `.claude/skills/` (or
-`~/.claude/skills/`) and ask, for example, "Why is my pod not pinned?".
+and troubleshoots. Add the folder to your agent's skills directory, or point the agent
+at `SKILL.md`, then ask, for example, "Why is my pod not pinned?".
 
 ---
 
