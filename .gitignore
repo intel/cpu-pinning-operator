@@ -27,12 +27,8 @@ coverage.*
 allure-results/
 allure-report/
 
-# Local editor and assistant state. Of .claude/, only the
-# use-cpu-pinning-operator skill is tracked.
-.claude/*
-!.claude/skills/
-.claude/skills/*
-!.claude/skills/use-cpu-pinning-operator/
+# Local editor and assistant state. The agent skill lives in skills/.
+.claude/
 
 # Local working files kept out of the tree.
 sdl/
