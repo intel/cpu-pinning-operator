@@ -7,6 +7,7 @@
 
 # Assistant skill docs (not build input)
 .claude/
+skills/
 
 # GitHub workflows and issue templates
 .github/

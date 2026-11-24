@@ -140,6 +140,14 @@ kubectl get noderesourcetopology <node> -o yaml
 > The bundled plugin runs in the release namespace. Use `-n kube-system` only when
 > the plugin was installed separately.
 
+### Use it with an AI coding agent
+
+The repo ships an agent skill, [`use-cpu-pinning-operator`](skills/use-cpu-pinning-operator/SKILL.md).
+It takes an agent from "nothing installed" to "this pod runs on its own cores": it checks
+prerequisites, installs with Helm, picks pods with a `BalloonPinningPolicy`, verifies pinning
+and troubleshoots. Open Claude Code in a checkout of this repo and ask, for example,
+"Why is my pod not pinned?".
+
 ---
 
 ## Next steps
