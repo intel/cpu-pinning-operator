@@ -1,0 +1,60 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+# Build output
+/bin/
+manager
+
+# Go
+vendor/
+*.test
+*.out
+coverage.*
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Local image tarballs
+*.tar
+
+# Allure e2e reporting: the result JSON emitted by `make test-e2e` and the HTML
+# rendered by `make test-e2e-report`. Both are build artifacts, never tracked.
+# The bare `go test -tags e2e ./test/e2e/...` invocation writes the results dir
+# under the package directory, so ignore it at any depth.
+allure-results/
+allure-report/
+
+# Local editor and assistant state. Of .claude/, only the
+# use-cpu-pinning-operator skill is tracked.
+.claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/use-cpu-pinning-operator/
+
+# Local working files kept out of the tree.
+sdl/
+
+# Reports and scratch directories that build tools run by hand drop into the
+# working tree. None is an input to a build or a test.
+
+# Compile and build reports.
+BUILD.metrics.xml
+build-*.txt
+tu-timings.txt
+
+# Helm hooks rendered by sec-iac.yml so `trivy config` can see them — Trivy reads
+# only Helm's rendered Manifest and Helm keeps helm.sh/hook manifests out of it.
+# Regenerated per run from the chart; never an input to anything.
+trivy-helm-hooks/
+
+# Directories tools write their generated output and scratch files into.
+output/
+emit/
+telemetry/
+tmp/
+
+# Per-pass logs and Allure results from `make test-validation`.
+validation-results/

@@ -1,0 +1,47 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# Reference BalloonPinningPolicy for vLLM inference workloads.
+#
+# This is the same policy the Helm chart renders with
+# `--set 'balloonPinningPolicy.match.byContainerName={vllm}'
+#  --set 'balloonPinningPolicy.namespaces={inference}'`
+# (see deploy/cpu-pinning-operator/values.yaml).
+# Ships as an example so users onboarding a fresh cluster can `kubectl apply` a
+# working policy without invoking helm. For a KServe predictor that may run vLLM
+# or SGLang, use policy-kserve.yaml.
+#
+# Behavior:
+#   - Matches container `vllm` in namespace `inference`.
+#   - Reads the balloon span from the pod's vLLM flags / env:
+#       `--tensor-parallel-size N`, `-tp N`, `VLLM_TENSOR_PARALLEL_SIZE`,
+#       or the pod annotation `cpu-pinning-operator.intel.com/tp`.
+#   - Multiplies by pipeline-parallel size if present, snaps to {1,2,4,8}.
+#   - Prefers AMX-capable nodes (soft nodeAffinity) via the operator's own
+#     `cpu-pinning-operator.intel.com/amx` node label.
+apiVersion: cpu-pinning-operator.intel.com/v1alpha1
+kind: BalloonPinningPolicy
+metadata:
+  name: vllm
+spec:
+  match:
+    byContainerName: [vllm]
+  namespaces: [inference]
+  intent:
+    span:
+      annotation: cpu-pinning-operator.intel.com/tp
+      argRegex: '(?:^|\s)(?:--tensor-parallel-size|-tp)(?:=|\s+)(\d+)'
+      envVar: VLLM_TENSOR_PARALLEL_SIZE
+      default: 1
+    multiplier:
+      annotation: cpu-pinning-operator.intel.com/multiplier
+      argRegex: '(?:^|\s)(?:--pipeline-parallel-size|-pp)(?:=|\s+)(\d+)'
+      envVar: VLLM_PIPELINE_PARALLEL_SIZE
+      default: 1
+  capacityCheck:
+    mode: warn
+  scheduling:
+    enforcePinning: true
+    nodeFeatures:
+      cpu-pinning-operator.intel.com/amx: prefer
+  driftPolicy: eventsOnly

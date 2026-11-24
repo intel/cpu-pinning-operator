@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[{\"node\":\"n1\",\"perNumaCores\":1,\"perNumaMem\":-1,\"memBytes\":-1,\"span\":1,\"memChecked\":true,\"rawFree\":{\"0\":8},\"memFree\":{\"0\":1}}]")

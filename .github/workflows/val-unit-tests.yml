@@ -1,0 +1,94 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+name: unit-tests
+
+on:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-24.04
+    container: golang:1.26
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Cache Go build and module cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            /go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: gofmt (fail on drift)
+        run: |
+          drift="$(gofmt -l $(git ls-files '*.go'))"
+          if [ -n "$drift" ]; then
+            echo "::error::gofmt drift in:"; echo "$drift"
+            exit 1
+          fi
+
+      - name: go vet
+        run: make vet
+
+      # test/chart renders the chart, and fails rather than skips when CI is set.
+      # No dependency-resolution step: the subcharts are committed under
+      # deploy/cpu-pinning-operator/charts/, so helm renders them from the checkout rather
+      # than fetching them from two third-party hosts, whose outages would redden
+      # this job (see trivy-image.yml; Chart.lock pins each dependency's version and repository).
+      - name: Set up Helm
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v4
+        with:
+          version: v3.17.3
+
+      - name: Cache envtest control-plane binaries
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.local/share/kubebuilder-envtest
+          key: ${{ runner.os }}-envtest-${{ hashFiles('Makefile') }}
+          restore-keys: |
+            ${{ runner.os }}-envtest-
+
+      # The envtest guards fail rather than skip under CI, so provide the binaries.
+      - name: Fetch envtest control-plane binaries
+        run: |
+          assets="$(make -s envtest-path)"
+          test -d "$assets"
+          echo "KUBEBUILDER_ASSETS=$assets" >> "$GITHUB_ENV"
+
+      # Named explicitly: `make test` below stays green if this package disappears.
+      - name: CRD install on a real apiserver
+        run: |
+          set -o pipefail
+          go test ./test/crdinstall/... -count=1 -v -run 'TestGeneratedCRDsInstall$' 2>&1 \
+            | tee "$RUNNER_TEMP/crdinstall.log"
+          grep -q '^--- PASS: TestGeneratedCRDsInstall' "$RUNNER_TEMP/crdinstall.log"
+
+      - name: Unit tests
+        run: make test
+
+      - name: Generated-artifact drift (make generate)
+        run: |
+          make generate
+          drift="$(git status --porcelain)"
+          if [ -n "$drift" ]; then
+            echo "::error::Generated artifacts are out of date — run 'make generate' and commit."
+            echo "$drift"
+            exit 1
+          fi

@@ -1,0 +1,85 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# EXAMPLE Kyverno ClusterPolicy — restrict who may mutate the operator's
+# cluster-wide pinning configuration.
+#
+# THE GAP THIS CLOSES
+# -------------------
+# The singleton constraint on BalloonsClusterConfig is a CEL rule
+# (`self.metadata.name == 'cluster'`) — it stops a *second* config object being
+# created, but it does NOT decide *who* may create or edit it. Likewise a
+# BalloonPinningPolicy is cluster-scoped: any principal granted create/update/
+# patch on these CRDs can rewrite cluster-wide CPU-pinning behavior. In a
+# multi-tenant cluster a namespace admin who is handed those verbs (directly or
+# via an over-broad aggregated role) can therefore change placement for every
+# tenant. RBAC can bind these verbs to a specific group, but the grant can leak
+# (aggregated roles, extra bindings); this admission policy is defense in depth
+# that re-checks the requesting identity regardless of how the verbs were granted.
+#
+# WHAT IT DOES
+# ------------
+# Denies CREATE / UPDATE on BalloonsClusterConfig and BalloonPinningPolicy in
+# the operator's API group unless the requesting user is in the platform-admin
+# group. The operator's own ServiceAccount is exempted so its reconcilers and
+# the shipped default objects keep working.
+#
+# CUSTOMIZE BEFORE APPLYING
+# -------------------------
+#   * `platform-admins`  — REPLACE with your real platform-admin group (an OIDC
+#                          group, a `system:serviceaccount:...` name, etc.).
+#   * the ServiceAccount  — the exemption below matches the default install
+#                          (`cpu-pinning-operator` in `cpu-pinning-operator-system`).
+#                          Adjust if you overrode fullnameOverride / the release
+#                          namespace.
+#
+# This manifest is an OPT-IN reference for platform teams — it is NOT installed
+# by the Helm chart. Apply it yourself once Kyverno is running:
+#     kubectl apply -f restrict-bcc-bpp-mutation.yaml
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-bcc-bpp-mutation
+  annotations:
+    policies.kyverno.io/title: Restrict BCC/BPP mutation to platform admins
+    policies.kyverno.io/category: CPU Pinning Operator
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/subject: BalloonsClusterConfig, BalloonPinningPolicy
+    policies.kyverno.io/description: >-
+      Denies create/update of BalloonsClusterConfig and BalloonPinningPolicy
+      unless the requester is a platform admin, closing the gap left by
+      CEL-only singleton enforcement and cluster-scoped RBAC verbs.
+spec:
+  validationFailureAction: Enforce
+  background: false
+  rules:
+    - name: restrict-bcc-bpp-mutation-to-platform-admins
+      match:
+        any:
+          - resources:
+              kinds:
+                - cpu-pinning-operator.intel.com/v1alpha1/BalloonsClusterConfig
+                - cpu-pinning-operator.intel.com/v1alpha1/BalloonPinningPolicy
+              operations:
+                - CREATE
+                - UPDATE
+      exclude:
+        any:
+          # Allow the platform-admin group. REPLACE `platform-admins` with your
+          # real group (OIDC group, etc.).
+          - subjects:
+              - kind: Group
+                name: platform-admins
+          # Allow the operator's own ServiceAccount so its reconcilers and the
+          # chart-shipped default objects keep working. Adjust the name/namespace
+          # if you overrode the release name or namespace.
+          - subjects:
+              - kind: ServiceAccount
+                name: cpu-pinning-operator
+                namespace: cpu-pinning-operator-system
+      validate:
+        message: >-
+          BalloonsClusterConfig and BalloonPinningPolicy are cluster-wide CPU
+          pinning configurations and may only be created or modified by a
+          platform administrator. Contact your platform team.
+        deny: {}

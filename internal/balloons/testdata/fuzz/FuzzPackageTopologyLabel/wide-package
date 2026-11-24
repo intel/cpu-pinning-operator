@@ -1,0 +1,4 @@
+go test fuzz v1
+string("16_16")
+int(8)
+string("-colocate")

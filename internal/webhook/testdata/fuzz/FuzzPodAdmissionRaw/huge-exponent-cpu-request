@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("{\"spec\":{\"containers\":[{\"name\":\"vllm\",\"resources\":{\"requests\":{\"cpu\":\"92233720E6854775807\"}}}]}}")

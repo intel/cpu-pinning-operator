@@ -1,0 +1,50 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+# golangci-lint config for `make lint` and for the linter job in CI, which turns red
+# on any issue reported here. It is not part of the pre-commit gate — that stays
+# gofmt+vet+test. Two groups of linters:
+#
+# Dead/unused code, which plain `go vet` cannot catch:
+#   - unused:      unused constants, variables, functions and types (staticcheck U1000).
+#   - ineffassign: assignments whose value is never read.
+#   - unparam:     function parameters/returns that are always the same or unused.
+# `unused` is the primary signal that complements `make deadcode`.
+#
+# Resource and control-flow hygiene, each of which reports nothing on the current
+# tree, so they cost no triage and hold the tree where it is:
+#   - bodyclose:     an HTTP response body that is never closed — a socket leak.
+#   - nilerr:        `if err != nil { return nil }`, which swallows the error.
+#   - makezero:      a slice made with a non-zero length and then appended to.
+#   - durationcheck: a multiplication of two time.Durations, which is never what
+#                    the author meant.
+# Adding a linter here means measuring it first: it has to report zero, or its findings
+# have to be triaged in the same change, because the CI job reading this config gates.
+version: "2"
+
+run:
+  # On a cold-cache CI container, loading the k8s/controller-runtime dependency
+  # graph for whole-program analyzers (unused/unparam) can exceed golangci-lint's
+  # 1-minute default and abort with "context deadline exceeded". Set an
+  # explicit, generous budget so the load finishes regardless of tool-version default.
+  timeout: 10m
+  # No `build-tags: [e2e]` here, deliberately: `unparam` reports findings in
+  # test/e2e that are not triaged. `go vet -tags e2e` in the `vet` target covers
+  # that package instead.
+
+linters:
+  default: none
+  enable:
+    - unused
+    - ineffassign
+    - unparam
+    - bodyclose
+    - nilerr
+    - makezero
+    - durationcheck
+
+issues:
+  # Report everything. The defaults cap a repeated message at 3 occurrences and a
+  # linter at 50 issues, so a count read off a default run understates the real one.
+  max-issues-per-linter: 0
+  max-same-issues: 0

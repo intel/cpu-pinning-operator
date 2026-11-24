@@ -1,0 +1,111 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# EXAMPLE Gatekeeper / OPA ConstraintTemplate — restrict who may mutate the
+# operator's cluster-wide pinning configuration.
+#
+# THE GAP THIS CLOSES
+# -------------------
+# The singleton constraint on BalloonsClusterConfig is a CEL rule
+# (`self.metadata.name == 'cluster'`) — it stops a *second* config object being
+# created, but it does NOT decide *who* may create or edit it. Likewise a
+# BalloonPinningPolicy is cluster-scoped: any principal granted create/update/
+# patch on these CRDs can rewrite cluster-wide CPU-pinning behavior. RBAC can
+# bind these verbs to a specific group, but the grant can leak (aggregated
+# roles, extra bindings); this admission policy is defense in depth that
+# re-checks the requesting identity regardless of how the verbs were granted.
+#
+# WHAT IT DOES
+# ------------
+# This ConstraintTemplate defines the `RestrictPinningConfigMutation` kind. The
+# accompanying Constraint (see constraint-restrict-bcc-bpp-mutation.yaml) binds
+# it to the two CRDs and passes the allowed principals as parameters. The Rego
+# denies the request unless the requesting user is in an allowed group OR is an
+# explicitly allowed user (used to exempt the operator ServiceAccount).
+#
+# This manifest is an OPT-IN reference for platform teams — it is NOT installed
+# by the Helm chart. Apply the template first, then the constraint:
+#     kubectl apply -f constrainttemplate-restrict-bcc-bpp-mutation.yaml
+#     kubectl apply -f constraint-restrict-bcc-bpp-mutation.yaml
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: restrictpinningconfigmutation
+  annotations:
+    description: >-
+      Denies create/update of the cpu-pinning-operator CRDs unless the
+      requester is an allowed platform-admin group or an allowed user.
+spec:
+  crd:
+    spec:
+      names:
+        kind: RestrictPinningConfigMutation
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            allowedGroups:
+              description: Groups permitted to mutate the pinning config (e.g. platform-admins).
+              type: array
+              items:
+                type: string
+            allowedUsers:
+              description: >-
+                Individual usernames permitted to mutate the pinning config,
+                e.g. the operator ServiceAccount
+                system:serviceaccount:<ns>:<sa>.
+              type: array
+              items:
+                type: string
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package restrictpinningconfigmutation
+
+        # Only gate mutating admission (CREATE/UPDATE; PATCH surfaces as UPDATE).
+        # DELETE is intentionally left unrestricted, matching the Kyverno example.
+        mutating_operation {
+          input.review.operation == "CREATE"
+        }
+        mutating_operation {
+          input.review.operation == "UPDATE"
+        }
+
+        # Resolve the object name from the request payload, which is reliably
+        # present for CREATE/UPDATE. Fall back to "<unknown>" so an absent name
+        # never makes the message (and thus the violation) undefined — that
+        # would fail open and allow an unauthorized mutation.
+        object_name = name {
+          name := input.review.object.metadata.name
+        } else = "<unknown>"
+
+        # userInfo.username / .groups are optional; fall back so the message
+        # (and thus the violation) is never undefined — an undefined message
+        # would fail open and allow an unauthorized mutation.
+        username = u {
+          u := input.review.userInfo.username
+        } else = "<unknown>"
+
+        groups = g {
+          g := input.review.userInfo.groups
+        } else = []
+
+        # Deny unless the requester is in an allowed group or is an allowed user.
+        violation[{"msg": msg}] {
+          mutating_operation
+          not requester_allowed
+          msg := sprintf(
+            "user %q (groups %v) may not create or modify %s/%s; cluster-wide CPU pinning config is restricted to platform administrators",
+            [username, groups, input.review.kind.kind, object_name]
+          )
+        }
+
+        requester_allowed {
+          allowed_groups := {g | g := input.parameters.allowedGroups[_]}
+          user_groups := {g | g := input.review.userInfo.groups[_]}
+          count(allowed_groups & user_groups) > 0
+        }
+
+        requester_allowed {
+          input.review.userInfo.username == input.parameters.allowedUsers[_]
+        }

@@ -1,0 +1,35 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# Reference BalloonPinningPolicy demonstrating a HARD node-feature requirement.
+#
+# The chart's default policy uses `nodeFeatures.amx: prefer` (soft) — matched pods
+# schedule anywhere but rank AMX-capable nodes higher. Where the workload is
+# tuned for Intel® Advanced Matrix Extensions (Intel® AMX), switch to
+# `require`: the pod stays `Pending` if no AMX-capable node is available, rather
+# than landing on a node without AMX.
+#
+# Same shape works for any other node-feature label — replace `amx` with e.g.
+# `vendor.io/gpu-family` to gate a policy on a specific accelerator. No Go
+# release needed to onboard a new label.
+apiVersion: cpu-pinning-operator.intel.com/v1alpha1
+kind: BalloonPinningPolicy
+metadata:
+  name: vllm-amx-required
+spec:
+  match:
+    byContainerName: [vllm]
+  namespaces: [inference-amx-only]
+  intent:
+    span:
+      annotation: cpu-pinning-operator.intel.com/tp
+      argRegex: '(?:^|\s)(?:--tensor-parallel-size|-tp)(?:=|\s+)(\d+)'
+      envVar: VLLM_TENSOR_PARALLEL_SIZE
+      default: 1
+  capacityCheck:
+    mode: warn
+  scheduling:
+    enforcePinning: true
+    nodeFeatures:
+      cpu-pinning-operator.intel.com/amx: require
+  driftPolicy: eventsOnly

@@ -1,0 +1,97 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+name: sec-code
+
+on:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    runs-on: ubuntu-24.04
+    container: golang:1.26
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Cache Go build and module cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            /go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
+  # No continue-on-error: a finding turns this job red. With the flag set the job
+  # reported success even when gosec had exited non-zero, so its green tick said
+  # nothing about whether gosec found anything — the reader had to open the run and
+  # read the step conclusion to learn which of the two had happened.
+  gosec:
+    runs-on: ubuntu-24.04
+    container: golang:1.26
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Mark workspace safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Cache Go build and module cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            /go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: gosec
+        run: |
+          set -o pipefail
+          go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
+          # -tests is the difference between reading the operator and reading the
+          # repository: without it gosec skips every _test.go file, which on this tree
+          # is more than half of the files it reads.
+          "$(go env GOPATH)/bin/gosec" -tests -exclude-generated -exclude-dir=test \
+            -exclude-dir=.claude ./... 2>&1 | tee "$RUNNER_TEMP/gosec.log"
+
+          # gosec exits 0 both when it found nothing and when it parsed nothing, so
+          # the exit status above cannot tell those apart. The count it prints can.
+          # A floor rather than an exact number, so ordinary growth does not touch it.
+          # What it catches is a collapse, not any shrink: dropping -tests takes the
+          # count well below the floor, and an exclusion has to remove dozens of files
+          # before this notices. A smaller exclusion is caught by review, not here.
+          files="$(sed -n 's/^[[:space:]]*Files[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+            "$RUNNER_TEMP/gosec.log" | tail -1)"
+          echo "gosec parsed ${files:-0} files"
+          if [ "${files:-0}" -lt 100 ]; then
+            echo "::error::gosec parsed ${files:-0} files, expected at least 100 — the scan lost coverage rather than finding nothing."
+            exit 1
+          fi

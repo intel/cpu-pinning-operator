@@ -1,0 +1,10 @@
+go test fuzz v1
+string("inference")
+string("vllm")
+string("app")
+string("llm")
+string("92233720E6854775807")
+string("16Gi")
+string("4")
+string("")
+string("")

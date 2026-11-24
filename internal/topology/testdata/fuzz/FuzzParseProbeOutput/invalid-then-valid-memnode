@@ -1,0 +1,2 @@
+go test fuzz v1
+string("NUMA node(s): 1\nCPU(s): 8\nPKGNODE node=0 pkg=0\nMEMNODE node=0 kb=0\nMEMNODE node=0 kb=2048\n")

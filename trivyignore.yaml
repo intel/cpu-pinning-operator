@@ -1,0 +1,178 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+# Per-file Trivy misconfiguration exceptions, for the `trivy config` scan in
+# .github/workflows/sec-iac.yml (passed with --ignorefile; Trivy does not discover a
+# YAML ignore file on its own).
+#
+# WHY THIS FILE EXISTS ALONGSIDE .trivyignore
+#   .trivyignore can only silence a rule id, repository-wide, which is too blunt for
+#   the config-mode scan: that scan renders the Helm chart, so it also reads the
+#   vendored third-party subchart, and tolerating a rule for upstream's DaemonSet
+#   would stop that rule flagging our own manifests. A YAML ignore file is the only
+#   form Trivy accepts `paths:` in, so every entry below is pinned to the file it
+#   applies to. .trivyignore serves the filesystem and rendered-chart legs of trivy-image.yml — keep the two in agreement.
+#
+# WHY SOME PATHS ARE UNDER trivy-helm-hooks/
+#   Trivy renders the chart itself but reads only Helm's `Manifest`, and Helm moves
+#   every manifest annotated "helm.sh/hook" into a separate `Hooks` list — so the
+#   default-enabled uninstall hooks are invisible to the
+#   config scan. sec-iac.yml renders them with `helm template --show-only` into
+#   trivy-helm-hooks/ so the one scan covers them; those are the paths Trivy then
+#   reports, so that is what an exception has to be pinned to. The directory is
+#   generated per run and gitignored.
+#
+# An entry here is a recorded exception, not a resolved finding.
+#
+# Adding an entry: pin it to a path, say why the finding cannot or should not be
+# fixed, and prefer fixing. An unexplained line here is how a real finding becomes
+# invisible.
+
+misconfigurations:
+  # ---------------------------------------------------------------------------
+  # Upstream, not ours: the vendored nri-resource-policy-balloons subchart.
+  #
+  # The chart ships this subchart enabled by default, so `trivy config` renders and
+  # reads it, but its manifests are upstream's. Two reasons they are scoped out here
+  # rather than fixed or globally silenced:
+  #   - Fixing means patching a vendored third-party chart, which the next version
+  #     bump discards. trivy-image.yml keeps a report-only scan of the rendered subchart so the
+  #     findings stay visible rather than disappearing.
+  #   - Silencing by rule id (the only thing .trivyignore can do) would stop
+  #     KSV-0014/0118/0121 and friends flagging OUR Deployment, which is the
+  #     coverage this file exists to protect.
+  #
+  # On KSV-0023/KSV-0121 specifically: the NRI plugin needs /proc and /sys to read
+  # CPU topology and drive CRI pinning, so the hostPath mounts are the function of
+  # the component. Trivy's hostPath rules carry a fixed severity regardless of what
+  # is actually mounted, so the severity says nothing about these two mounts.
+  - id: KSV-0011
+    paths: ["deploy/cpu-pinning-operator/charts/nri-resource-policy-balloons/templates/daemonset.yaml"]
+    statement: "Upstream subchart DaemonSet; a patch to the vendored chart is lost on the next bump, and trivy-image.yml still reports it."
+  - id: KSV-0012
+    paths: ["deploy/cpu-pinning-operator/charts/nri-resource-policy-balloons/templates/daemonset.yaml"]
+    statement: "Upstream subchart DaemonSet; a patch to the vendored chart is lost on the next bump, and trivy-image.yml still reports it."
+  - id: KSV-0014
+    paths: ["deploy/cpu-pinning-operator/charts/nri-resource-policy-balloons/templates/daemonset.yaml"]
+    statement: "Upstream subchart DaemonSet; a patch to the vendored chart is lost on the next bump, and trivy-image.yml still reports it."
+  - id: KSV-0018
+    paths: ["deploy/cpu-pinning-operator/charts/nri-resource-policy-balloons/templates/daemonset.yaml"]
+    statement: "Upstream subchart DaemonSet; a patch to the vendored chart is lost on the next bump, and trivy-image.yml still reports it."
+  - id: KSV-0020
+    paths: ["deploy/cpu-pinning-operator/charts/nri-resource-policy-balloons/templates/daemonset.yaml"]
+    statement: "Upstream subchart DaemonSet; a patch to the vendored chart is lost on the next bump, and trivy-image.yml still reports it."
+  - id: KSV-0021
+    paths: ["deploy/cpu-pinning-operator/charts/nri-resource-policy-balloons/templates/daemonset.yaml"]
+    statement: "Upstream subchart DaemonSet; a patch to the vendored chart is lost on the next bump, and trivy-image.yml still reports it."
+  - id: KSV-0023
+    paths: ["deploy/cpu-pinning-operator/charts/nri-resource-policy-balloons/templates/daemonset.yaml"]
+    statement: "Upstream subchart mounts /proc and /sys to read CPU topology; fixed-severity hostPath rule."
+  - id: KSV-0030
+    paths: ["deploy/cpu-pinning-operator/charts/nri-resource-policy-balloons/templates/daemonset.yaml"]
+    statement: "Upstream subchart DaemonSet; a patch to the vendored chart is lost on the next bump, and trivy-image.yml still reports it."
+  - id: KSV-0104
+    paths: ["deploy/cpu-pinning-operator/charts/nri-resource-policy-balloons/templates/daemonset.yaml"]
+    statement: "Upstream subchart DaemonSet; a patch to the vendored chart is lost on the next bump, and trivy-image.yml still reports it."
+  - id: KSV-0118
+    paths: ["deploy/cpu-pinning-operator/charts/nri-resource-policy-balloons/templates/daemonset.yaml"]
+    statement: "Upstream subchart DaemonSet; a patch to the vendored chart is lost on the next bump, and trivy-image.yml still reports it."
+  - id: KSV-0121
+    paths: ["deploy/cpu-pinning-operator/charts/nri-resource-policy-balloons/templates/daemonset.yaml"]
+    statement: "Upstream subchart mounts /proc and /sys to read CPU topology; fixed-severity hostPath rule."
+  - id: KSV-0125
+    paths: ["deploy/cpu-pinning-operator/charts/nri-resource-policy-balloons/templates/daemonset.yaml"]
+    statement: "Upstream subchart image registry; ours is configurable and mirrored."
+
+  # ---------------------------------------------------------------------------
+  # Ours, and load-bearing.
+
+  # KSV-0125 "Restrict container images to trusted registries". The operator image is
+  # published at docker.io/intel/cpu-pinning-operator, which is the chart's default,
+  # and the check's default trust list holds only ECR, GCR and Azure. Configuring
+  # ksv0125.trusted_registries instead would trust all of docker.io for every manifest
+  # the scan reads, because the check matches the registry hostname, not the
+  # namespace; pinning it to the manifests that run our own image keeps the rule live
+  # for anything else. image.repository is configurable for mirrored installs.
+  - id: KSV-0125
+    paths:
+      - "deploy/cpu-pinning-operator/templates/deployment.yaml"
+      - "trivy-helm-hooks/pre-delete-hook.yaml"
+    statement: "Official Intel image on Docker Hub (docker.io/intel); image.repository is configurable for mirrors."
+
+  # KSV-0114 "Manage webhookconfigurations". Same exception as the one in
+  # .trivyignore — the reasoning, and the two narrowings that measurably do not clear
+  # the rule, are written out there; do not duplicate it here, keep the two files
+  # agreeing. Both grants are required and both are pinned with resourceNames to the
+  # release's own object: the reconcilers patch the mutating webhook's
+  # namespaceSelector and failurePolicy at runtime, and the pre-delete hook deletes
+  # the validating webhook on uninstall.
+  - id: KSV-0114
+    paths:
+      - "deploy/cpu-pinning-operator/templates/rbac.yaml"
+      - "deploy/generated/role.yaml"
+      - "trivy-helm-hooks/pre-delete-hook.yaml"
+    statement: "Webhook write grants are required by the reconcilers and the uninstall hook; see .trivyignore."
+
+  # KSV-0048 "Manage Kubernetes workloads and pods" / KSV-0049 "Manage configmaps".
+  # KSV-0048 fires on the namespaced Role granting pod create/delete: the Node
+  # reconciler runs a topology-probe pod per node, in the manager's own namespace
+  # only (the ClusterRole holds no pod write verb). KSV-0049 fires on the ConfigMap
+  # writes for the dashboard and readiness-CA ConfigMaps. Removing either grant stops
+  # the product working; there is no narrower form, because the rule keys on the
+  # resource+verb pair. Same grants in both the chart's rendered RBAC and the
+  # marker-generated baseline.
+  - id: KSV-0048
+    paths:
+      - "deploy/cpu-pinning-operator/templates/rbac.yaml"
+      - "deploy/generated/role.yaml"
+    statement: "Topology-probe pods, created and deleted in the release namespace only."
+  - id: KSV-0049
+    paths:
+      - "deploy/cpu-pinning-operator/templates/rbac.yaml"
+      - "deploy/generated/role.yaml"
+    statement: "The operator owns its dashboard and readiness-CA ConfigMaps."
+
+  # KSV-01010 "ConfigMap with sensitive content". A false positive: the flagged key is
+  # WAIT_TIMEOUT, whose value is a duration. No credential, token or key is written to
+  # this ConfigMap — the webhook's TLS material comes from a cert-manager Secret
+  # mounted separately.
+  - id: KSV-01010
+    paths: ["deploy/cpu-pinning-operator/templates/configmap.yaml"]
+    statement: "False positive: the flagged key WAIT_TIMEOUT holds a duration, not a secret."
+
+  # KSV-0020 "Runs with UID <= 10000" on the manager container and on the two hook
+  # Job containers — all three share .Values.securityContext and all three run the same
+  # image, so this is one decision, not three.
+  #
+  # runAsUser is deliberately unset. values.yaml pins the rest of the hardened set a
+  # restricted Pod Security Admission namespace and OpenShift's restricted-v2 SCC
+  # require (runAsNonRoot, no privilege escalation, all capabilities dropped,
+  # RuntimeDefault seccomp, read-only rootfs). On OpenShift an SCC constrains the uid
+  # with `runAsUser: {type: MustRunAsRange}` and allocates it from the namespace's
+  # openshift.io/sa.scc.uid-range, so a literal runAsUser is admitted only under an
+  # SCC whose range contains it — templates/openshift-scc.yaml exists precisely
+  # because the topology probe pins uid 1000 and therefore needs one. Pinning a uid on
+  # the manager would mean shipping, and requiring, a second SCC for the component
+  # that is supposed to install cleanly under the platform's own restricted-v2.
+  #
+  # The runtime uid is non-root regardless: runAsNonRoot: true is set and the image
+  # declares USER 65532:65532, so an unset runAsUser yields 65532 on a cluster that
+  # does not reassign it and a namespace-range uid (well above 10000) on one that
+  # does. There is no path by which this container runs as a low uid.
+  #
+  # NOT waived, because the SCC asymmetry makes it fixable: KSV-0021 "Runs with GID
+  # <= 10000". An SCC has no runAsGroup strategy — only fsGroup and
+  # supplementalGroups — so unlike the uid, a literal primary gid is neither assigned
+  # nor validated by OpenShift and is admitted as written. values.yaml therefore sets
+  # runAsGroup: 65532 (the gid the image already declares) and the rule passes on all
+  # three containers. Do not re-add a KSV-0021 entry here; fix the manifest instead.
+  - id: KSV-0020
+    paths:
+      - "deploy/cpu-pinning-operator/templates/deployment.yaml"
+      - "trivy-helm-hooks/pre-delete-hook.yaml"
+    statement: "runAsUser left unset so the platform's own SCC-assigned uid range applies without shipping a second SCC; runAsNonRoot is set, the image declares USER 65532:65532, and runAsGroup is pinned above the threshold."
+
+  # No Dockerfile entry. DS-0026 "No HEALTHCHECK defined" passes: the Dockerfile declares a HEALTHCHECK that runs the manager's own
+  # `healthcheck` subcommand, so the rule passes rather than being waived. Do not add a
+  # suppression for it — a dead entry here is indistinguishable from a live one and
+  # is how a real finding becomes invisible.

@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("[{\"node\":\"0\",\"perNumACores\":1,\"memBYtes\":1,\"rAwFree\":{\"0\":1}}]")

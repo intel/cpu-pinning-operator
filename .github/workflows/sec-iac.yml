@@ -1,0 +1,218 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+name: sec-iac
+
+# Infrastructure-as-code scanning with two tools:
+#
+#   trivy config  over the Dockerfile, the Helm chart and the static Kubernetes
+#                 manifests, JSON output, clean. It overlaps trivy-image.yml's
+#                 misconfig legs on purpose — those run in `fs` mode at
+#                 HIGH,CRITICAL and mostly report rather than gate; this job gates
+#                 on every severity. Suppressions live in trivyignore.yaml, per file.
+#                 The chart's helm.sh/hook manifests are rendered into the workspace
+#                 first, because Trivy's own Helm render cannot see them — see the
+#                 render step.
+#
+#   zizmor        over .github/workflows/**. Trivy covers none of it: Trivy 0.69.3's
+#                 misconfig scanners are azure-arm, cloudformation, dockerfile, helm,
+#                 kubernetes, terraform and ansible, so its filesystem pass walks
+#                 .github/workflows/ and reports clean without detecting a single
+#                 config file there. zizmor audits for security rather than syntax —
+#                 template injection, credential persistence, excessive permissions,
+#                 unpinned actions.
+
+on:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  TRIVY_IMAGE: aquasec/trivy:0.69.3
+  # zizmor publishes no Docker Hub image, so the release binary is fetched directly
+  # rather than run from an upstream image like Trivy is. Pinned by version AND
+  # by checksum: the tag alone would let a re-cut release change what runs here.
+  ZIZMOR_VERSION: 1.30.1
+  ZIZMOR_SHA256: e65324f4430c2717591937edcec90ccbefaf14c174f8ec9415e03ca875b46e1a
+  # Where the chart's Helm hooks are rendered so `trivy config` can see them at all
+  # (see the render step). Inside the workspace on purpose: one scan, one report.
+  HOOK_DIR: trivy-helm-hooks
+
+jobs:
+  trivy-config:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v4
+        with:
+          version: v3.17.3
+
+      - name: Render the chart's Helm hooks so the scan can see them
+        run: |
+          set -euo pipefail
+          # Trivy renders the Helm chart, but it reads only Helm's rendered `Manifest`
+          # — and Helm moves every manifest annotated "helm.sh/hook" into a separate
+          # `Hooks` list. So the hook manifests are dropped from the scan silently,
+          # with no warning and no missing-target to notice. Measured: delete the
+          # helm.sh/hook annotations from pre-delete-hook.yaml and the same scan
+          # reports it as a target with 5 failures, one of them the CRITICAL KSV-0114
+          # on the hook's webhook-delete ClusterRole.
+          #
+          # Rendering the hooks into the workspace keeps ONE trivy invocation and ONE
+          # JSON report covering the whole chart.
+          # --namespace is pinned for the same reason trivy-image.yml pins it: without
+          # it helm takes the namespace from the runner's kube context, so the
+          # rendered output would depend on the runner.
+          mkdir -p "$HOOK_DIR"
+          # Discovered rather than listed. A hook template added later must not fall
+          # out of this scan the same way these did.
+          hooks=$(grep -rl '"helm.sh/hook"' deploy/cpu-pinning-operator/templates --include='*.yaml' | sort)
+          test -n "$hooks"
+          for template in $hooks; do
+            name=$(basename "$template")
+            helm template cpu-pinning-operator deploy/cpu-pinning-operator \
+              --namespace cpu-pinning-operator-system \
+              -f docs/examples/values/kserve.yaml \
+              --show-only "templates/$name" > "$HOOK_DIR/$name"
+            # A hook gated off by default renders to comments only. Trivy would report
+            # no target for it, which the coverage check below would read as a scan
+            # gap, so drop it here and say so rather than failing or going quiet.
+            if grep -q '^kind:' "$HOOK_DIR/$name"; then
+              echo "hook rendered for scanning: $name"
+            else
+              echo "hook renders nothing with default values, not scanned: $name"
+              rm -f "${HOOK_DIR:?}/${name:?}"
+            fi
+          done
+
+      - name: Trivy config scan (gate)
+        run: |
+          set -euo pipefail
+          # No severity filter: the scan has to be clean, so LOW and MEDIUM count too.
+          # Everything currently outstanding is in trivyignore.yaml with a written
+          # justification, per file rather than per rule id — a rule silenced
+          # globally for the vendored subchart would stop flagging our own manifests.
+          #
+          # --ignorefile is explicit because Trivy discovers .trivyignore on its own but
+          # never a YAML ignore file, and `paths:` only exists in the YAML form.
+          #
+          # --helm-values: the chart fails to render without a policy target, and
+          # Trivy would then drop every chart template (see the coverage check).
+          #
+          # --output is written before the non-zero exit, so a red gate still leaves the
+          # report behind for triage and for the coverage check below.
+          docker run --rm \
+            -v "$PWD:/src" -v "$RUNNER_TEMP:$RUNNER_TEMP" -w /src \
+            "$TRIVY_IMAGE" config \
+              --format json \
+              --output "$RUNNER_TEMP/trivy-config.json" \
+              --ignorefile /src/trivyignore.yaml \
+              --helm-values docs/examples/values/kserve.yaml \
+              --exit-code 1 \
+              --skip-version-check \
+              .
+
+      - name: Check the config scan read the chart
+        # Measured failure modes, and the reason this step exists. Both end the same
+        # way — Trivy reports fewer targets than the gate claims to cover and exits 0:
+        #   - Trivy renders the Helm chart itself, and when it cannot (a subchart
+        #     archive missing, or deploy/cpu-pinning-operator/charts excluded) it drops
+        #     every chart template and reports the 11 targets it could still read.
+        #   - Trivy reads only Helm's `Manifest`, so every helm.sh/hook manifest is
+        #     dropped. That is why the render step above exists, and why the hooks are
+        #     asserted here: a render step that silently produced nothing would put
+        #     the gate straight back into the state this check was added to catch.
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/trivy-config.json"
+          test -s "$report"
+          targets=$(grep -c '"Target"' "$report")
+          echo "trivy config: $targets targets scanned"
+          required_targets=(
+            '"Dockerfile"'
+            '"deploy/cpu-pinning-operator/templates/rbac.yaml"'
+            '"deploy/cpu-pinning-operator/templates/deployment.yaml"'
+            '"deploy/generated/role.yaml"'
+          )
+          # Every hook the render step actually produced has to appear as a target.
+          # Derived from the rendered files, not from a second hard-coded list, so the
+          # two cannot drift apart.
+          rendered_hooks=0
+          for hook in "$HOOK_DIR"/*.yaml; do
+            test -e "$hook" || break
+            required_targets+=("\"$hook\"")
+            rendered_hooks=$((rendered_hooks + 1))
+          done
+          echo "trivy config: $rendered_hooks rendered Helm hook file(s) expected in the report"
+          test "$rendered_hooks" -gt 0 || {
+            echo "::error::no Helm hook was rendered for scanning — the chart's default-enabled hooks would be unscanned."
+            exit 1; }
+          for required in "${required_targets[@]}"; do
+            grep -q "$required" "$report" || {
+              echo "::error::$required is missing from the scan report — the scan did not read what this gate claims to cover."
+              exit 1; }
+          done
+
+      - name: Upload the Trivy config report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: trivy-config-${{ github.sha }}
+          path: ${{ runner.temp }}/trivy-config.json
+          retention-days: 30
+
+  zizmor:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install zizmor
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl --fail --silent --show-error --location \
+            -o zizmor.tar.gz \
+            "https://github.com/zizmorcore/zizmor/releases/download/v${ZIZMOR_VERSION}/zizmor-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${ZIZMOR_SHA256}  zizmor.tar.gz" | sha256sum -c -
+          tar xzf zizmor.tar.gz
+          ./zizmor --version
+
+      - name: zizmor (gate)
+        run: |
+          set -euo pipefail
+          # zizmor collects its own inputs, so count them here first: it is the same
+          # green-on-nothing risk as the Trivy gate above, and a renamed workflow
+          # directory is the way into it.
+          workflows=$(find .github/workflows -name '*.yml' -o -name '*.yaml' | wc -l)
+          echo "zizmor gate: $workflows workflow file(s) present"
+          test "$workflows" -gt 0
+          # Runs offline (zizmor's default), so the audits that need the GitHub API —
+          # impostor-commit, ref-confusion, known-vulnerable-actions — do not run; the
+          # rest do, and the result does not depend on api.github.com being reachable
+          # from the runner. Default persona: pedantic and auditor findings are
+          # reported by --persona auditor and are not gated here. Both limits are
+          # recorded alongside the scan output.
+          # --config is explicit: zizmor does not auto-discover .github/zizmor.yml when
+          # its input is a directory, and a waiver file that is silently not loaded
+          # fails the wrong way — the one waiver in it would reappear as a finding.
+          # Exits non-zero on any finding, so a new one turns the pull request red.
+          "$RUNNER_TEMP/zizmor" --no-progress --color never --config .github/zizmor.yml .

@@ -1,0 +1,12 @@
+go test fuzz v1
+string("inference")
+string("inference")
+string("*")
+string("vllm")
+string("app")
+string("llm")
+string("app")
+string("ll\x18\xb8Jm")
+string("largestContainer")
+string("1")
+string("92233720E6854775807")

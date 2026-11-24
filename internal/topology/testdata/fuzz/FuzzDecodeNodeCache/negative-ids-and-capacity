@@ -1,0 +1,2 @@
+go test fuzz v1
+string("{\"cpus\":[[-1,-2,-3]],\"mem\":[[-1,-1]]}")

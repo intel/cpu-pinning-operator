@@ -1,0 +1,19 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+# zizmor configuration. Passed explicitly with --config by the sec-iac workflow: the
+# file is NOT auto-discovered when zizmor is pointed at a directory, and a config that
+# is silently not loaded is a waiver that silently does not apply (measured — the same
+# run reports 1 ignored with --config and 0 without).
+#
+# Waivers only. Each one names the file it applies to, never a blanket rule-wide
+# disable, and each needs its reason written where the finding is. Prefer fixing a
+# finding over listing it here.
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        # The SLSA container generator verifies the ref it was called at and fails
+        # when that is a commit SHA, so release.yml references it by release tag.
+        "slsa-framework/slsa-github-generator/*": ref-pin
+        "*": hash-pin

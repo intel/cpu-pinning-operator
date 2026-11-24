@@ -1,0 +1,24 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# Chart values that target the KServe predictor in namespace "inference".
+#   helm install cpu-pinning-operator deploy/cpu-pinning-operator \
+#     -n cpu-pinning-operator-system --create-namespace -f docs/examples/values/kserve.yaml
+# For a bare vLLM Deployment, change kserve-container to vllm. The intent below reads
+# vLLM's tensor-parallel size, which a vLLM-backed KServe runtime takes in
+# kserve-container's args. If the InferenceService may run SGLang too,
+# docs/examples/policy-kserve.yaml reads both runtimes' flags in one policy.
+balloonPinningPolicy:
+  match:
+    byContainerName:
+      - kserve-container
+  namespaces:
+    - inference
+  intent:
+    span:
+      # The pod annotation wins; then vLLM's --tensor-parallel-size / -tp flag, anchored
+      # to an argument start; then the env var; else span 1.
+      annotation: cpu-pinning-operator.intel.com/tp
+      argRegex: '(?:^|\s)(?:--tensor-parallel-size|-tp)(?:=|\s+)(\d+)'
+      envVar: VLLM_TENSOR_PARALLEL_SIZE
+      default: 1

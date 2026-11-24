@@ -1,0 +1,243 @@
+#!/usr/bin/env bash
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# Pre-commit gate for cpu-pinning-operator. Runs the same checks a PR reviewer
+# expects, locally, before a commit is recorded, so a failure is caught before
+# the push rather than by CI on the pull request.
+#
+# Enable once per clone:  make hooks   (sets core.hooksPath=.githooks)
+# Bypass in an emergency:  git commit --no-verify   (discouraged; CI fails the PR instead)
+#
+# Checks (fast; skipped cleanly when a tool is absent):
+#   0. identifiers — reject local paths plus the person-specific patterns from env
+#   1. gofmt      — no formatting drift in staged Go files
+#   2. go vet     — static analysis, untagged and with -tags e2e (`make vet` does both)
+#   3. go test    — the unit suite (the "validate tests before commit" gate)
+#   3b. e2e       — the cluster-free guards in test/e2e, including the no-bare-skip one
+#   4. generate   — CRD/deepcopy drift, only if controller-gen is installed
+#
+# Check 0 runs on every commit, since a local path can leak from any file type.
+# Checks 1-4 run only when Go sources changed, so a doc-only / chart-only commit
+# pays for one diff-and-grep pass and nothing else.
+
+set -euo pipefail
+
+# Repo root (this hook may be invoked from a subdir).
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+red()   { printf '\033[0;31m%s\033[0m\n' "$*"; }
+green() { printf '\033[0;32m%s\033[0m\n' "$*"; }
+info()  { printf '\033[0;36m%s\033[0m\n' "$*"; }
+
+# What's staged?
+staged() { git diff --cached --name-only --diff-filter=ACMR; }
+go_changed() { staged | grep -qE '\.go$|(^|/)go\.(mod|sum)$'; }
+api_changed() { staged | grep -qE '^api/v1alpha1/.*\.go$'; }
+# A +kubebuilder:rbac / +kubebuilder:webhook marker anywhere under internal/ can
+# drift the generated RBAC/webhook baselines just as an api/ change drifts the
+# CRDs — `make generate` scans ./internal/..., not just the controller and webhook
+# packages (the metrics endpoint's TokenReview/SubjectAccessReview grants are
+# declared in internal/metrics, beside what they protect). Only a change to a
+# marker line itself can drift those baselines, so inspect the staged diff hunks
+# for added/removed marker lines rather than firing on any staged Go file there.
+markers_changed() {
+  local files
+  files="$(staged | grep -E '^internal/.*\.go$' || true)"
+  [ -n "$files" ] || return 1
+  git diff --cached --diff-filter=ACMR -U0 -- $files \
+    | grep -qE '^[-+].*\+kubebuilder:(rbac|webhook)'
+}
+gen_changed() { api_changed || markers_changed; }
+
+# 0. Check for internal identifiers in any staged file (not just Go).
+info "pre-commit: checking for internal identifiers…"
+# Structural patterns checked in-repo (no personal or system names, defined below):
+# These describe the shape of data without naming anyone:
+# - <abs>/home/<name>    Linux home paths (any user, any system)
+# - <abs>/Users/<name>   macOS home paths (any user, any system)
+#
+# The match must be an ABSOLUTE path, which is what separates a leaked home
+# directory from a repo path that merely contains a directory called "home":
+#   HIT   /home/alice/dev   /var/home/alice   /mnt/c/Users/alice
+#   pass  deploy/examples/home/values.yaml    docs/home/index.md
+# $abs allows the intermediate segments, so an ostree/Silverblue home under
+# /var/home and a WSL-mounted /mnt/c/Users are caught, not just /home directly.
+#
+# Optional extra patterns come from the $PRIVATE_IDENTIFIER_PATTERNS environment
+# variable: a |-separated POSIX extended regex alternation for any identifiers a
+# contributor or fork wants kept out of commits. Unset, only the path shapes above
+# are checked.
+#
+# Signed-off-by: lines are allowed to contain names per DCO.
+
+boundary='(^|[^[:alnum:]._/-])'
+abs='(/[[:alnum:]._-]+)*'
+structural_patterns="${boundary}${abs}/home/[[:alnum:]._-]+|${boundary}${abs}/Users/[[:alnum:]._-]+"
+extra_patterns="${PRIVATE_IDENTIFIER_PATTERNS:-}"
+
+# Combine patterns (or use structural only if extra is unset)
+if [ -n "$extra_patterns" ]; then
+  patterns="$structural_patterns|$extra_patterns"
+else
+  patterns="$structural_patterns"
+  info "pre-commit: PRIVATE_IDENTIFIER_PATTERNS not set; matching filesystem-path shapes only — no person, host or system name is being looked for."
+fi
+
+# Check staged changes for patterns, excluding DCO trailers
+# Skip check files themselves (which must contain pattern definitions to work)
+# Reading the staged diff is its own command, so a git failure cannot arrive as an empty
+# set that nothing matches. --output-indicator-new marks added CONTENT with `>` and leaves
+# the `+++ b/<path>` file headers alone, which is the only way to tell the two apart: with
+# the default `+`, an added line whose own text starts with `++` becomes `+++…`, so no
+# ordering of `grep '^+'`, `grep -v '^+++'` and `cut` can both keep that line and drop the
+# headers.
+if ! staged_diff="$(git diff --cached -U0 --output-indicator-new='>' \
+    -- . ':!.githooks/pre-commit' ':!.github/workflows/sec-secrets.yml')"; then
+  red "pre-commit: could not read the staged diff, so the identifier check did not run."
+  exit 1
+fi
+added="$(printf '%s\n' "$staged_diff" | grep '^>' | cut -c2- \
+  | grep -v '^Signed-off-by:' || true)"
+
+# grep exits 0 on a match, 1 on no match, and 2 or more on an error — including a
+# pattern set that does not compile. `if grep -q ...` reads that 2 as "no match", so an
+# unusable guard reports as a clean one. Read the status instead. A here-string rather
+# than a pipe, because `grep -q` stops at the first match and the writer at the head of a
+# pipe then dies of SIGPIPE, which pipefail reports in grep's place.
+status=0
+grep -qE "$patterns" <<<"$added" || status=$?
+case "$status" in
+  0)
+    red "pre-commit: internal identifier found. Use generic placeholders or check repository configuration."
+    grep -E "$patterns" <<<"$added" | head -3 | sed 's/^/  /' || true
+    exit 1
+    ;;
+  1)
+    ;;
+  *)
+    red "pre-commit: the identifier pattern set did not compile (grep exit $status), so this check did not run. Fix \$PRIVATE_IDENTIFIER_PATTERNS — it must be a valid POSIX extended regex alternation."
+    exit 1
+    ;;
+esac
+
+if ! go_changed; then
+  info "pre-commit: no Go changes staged — skipping build/test gate."
+  exit 0
+fi
+
+if ! command -v go >/dev/null 2>&1; then
+  red "pre-commit: Go changes staged but 'go' is not on PATH. Install Go 1.26 (the version go.mod names) or commit with --no-verify if you know what you're doing."
+  exit 1
+fi
+
+# A fixed name in a world-writable /tmp is a symlink-clobber target: with
+# fs.protected_symlinks off, a planted /tmp/precommit-test.log truncates whatever it
+# points at. One log serves every check — each reads its output before the next writes.
+tmp="$(mktemp -d)" || { red "pre-commit: could not create a temp dir for check output."; exit 1; }
+trap 'rm -rf "$tmp"' EXIT # the log, plus the e2e guards' allure results
+log="$tmp/check.log"
+e2e_out="$tmp/allure"; mkdir "$e2e_out"
+
+# 1. gofmt drift on staged Go files.
+info "pre-commit: gofmt…"
+fmt_bad="$(staged | grep -E '\.go$' | xargs -r gofmt -l 2>/dev/null || true)"
+if [ -n "$fmt_bad" ]; then
+  red "pre-commit: these staged files are not gofmt-clean:"
+  printf '  %s\n' $fmt_bad
+  red "Run: gofmt -w $fmt_bad   (or 'make fmt'), then re-stage."
+  exit 1
+fi
+
+# 2. go vet.
+info "pre-commit: go vet…"
+if ! make vet >"$log" 2>&1; then
+  red "pre-commit: 'go vet' failed:"; tail -20 "$log"; exit 1
+fi
+
+# 3. unit tests — the validate-before-commit gate.
+info "pre-commit: go test ./… …"
+if ! make test >"$log" 2>&1; then
+  red "pre-commit: unit tests failed:"; tail -30 "$log"; exit 1
+fi
+
+# 3b. e2e package — `make test` in step 3 runs untagged, so it never even compiles
+#     test/e2e (the whole package is behind `//go:build e2e`). `make vet` in step 2
+#     does vet it, with the tag set, so what is left here is the e2e tests that need
+#     no cluster. Measured: ~2-3s on a warm build cache, against a whole-hook run of
+#     ~50s that `make test` dominates.
+#
+#     The `--- PASS:` greps are part of the gate, not decoration: a -run filter
+#     that matches nothing (a rename) exits 0, which would silently disarm the check.
+#     They also insist on PASS rather than SKIP, which is what keeps the two
+#     source-scanning guards honest here: those skip as no-capability when the package
+#     sources are absent (a packaged binary shipped to a node), and a commit is always
+#     made from a checkout, so a SKIP means the scan lost its footing. Same guard as
+#     the envtest CRD-install step in val-unit-tests.yml. Adding a cluster-free e2e
+#     test means extending the -run filter AND adding its grep.
+info "pre-commit: cluster-free e2e guards (-tags e2e)…"
+if ! { CPU_PINNING_ALLURE_ADAPTER_CHILD= ALLURE_OUTPUT_PATH="$e2e_out" \
+       go test -tags e2e ./test/e2e/ -run 'TestAllure|TestInstalledPolicies|TestSelectorTargetsNamespace|TestPolicyMatchRestore|TestNoBareSkips|TestMetricsSkipRouting|TestReserveAuthorityModeSkip|TestSourceScanSkipRouting|TestMetricAssertions|TestProbeStall|TestNodeMetricsMissing|TestPodNRTReadsBindThePod|TestReservedFootprintModelsTheSpread|TestProbeWatch|TestSaturationCountsOnlyCapacityDenials|TestWatchRevisions|TestServingChainVerdict|TestRateLimitVerdict|TestReadinessInitLogVerdict|TestTLSProbe|TestCurlProbe|TestRestrictedGaps|TestPIIMatcher|TestLeaderPodOnce|TestRaxLedgerHeld|TestStaleNRTVerdict|TestStaleNRTFrozenCapacity|TestEveryCreateIsLabelled|TestSweepRestoresAndDeletesOnlyLabelled|TestPolicyIntentEditRetriesConflicts' -count=1 -v; } \
+     >"$log" 2>&1 \
+  || ! grep -q '^--- PASS: TestAllureStatus ' "$log" \
+  || ! grep -q '^--- PASS: TestAllureFailedThenSkippedIsFailed ' "$log" \
+  || ! grep -q '^--- PASS: TestInstalledPoliciesKeepsNamedPolicyWhenListForbidden ' "$log" \
+  || ! grep -q '^--- PASS: TestInstalledPoliciesFailsWhenNothingResolves ' "$log" \
+  || ! grep -q '^--- PASS: TestInstalledPoliciesFindsRenamedPolicyByList ' "$log" \
+  || ! grep -q '^--- PASS: TestSelectorTargetsNamespace ' "$log" \
+  || ! grep -q '^--- PASS: TestPolicyMatchRestoreRetriesRejectedWrites ' "$log" \
+  || ! grep -q '^--- PASS: TestPolicyMatchRestoreReportsWhyItFailed ' "$log" \
+  || ! grep -q '^--- PASS: TestNoBareSkips ' "$log" \
+  || ! grep -q '^--- PASS: TestMetricsSkipRoutingIsAuthAware ' "$log" \
+  || ! grep -q '^--- PASS: TestReserveAuthorityModeSkipIsSymmetric ' "$log" \
+  || ! grep -q '^--- PASS: TestSourceScanSkipRoutingNeedsSources ' "$log" \
+  || ! grep -q '^--- PASS: TestMetricAssertionsAreNotSilentlyDropped ' "$log" \
+  || ! grep -q '^--- PASS: TestProbeStallNamesTheKubeletsReason ' "$log" \
+  || ! grep -q '^--- PASS: TestNodeMetricsMissingTracksThePublishWindow ' "$log" \
+  || ! grep -q '^--- PASS: TestPodNRTReadsBindThePod ' "$log" \
+  || ! grep -q '^--- PASS: TestPodNRTReadsBindThePodCatchesTheShape ' "$log" \
+  || ! grep -q '^--- PASS: TestReservedFootprintModelsTheSpread ' "$log" \
+  || ! grep -q '^--- PASS: TestProbeWatchJudgesOnlyTheProbesContent ' "$log" \
+  || ! grep -q '^--- PASS: TestSaturationCountsOnlyCapacityDenials ' "$log" \
+  || ! grep -q '^--- PASS: TestWatchRevisionsKeepsItsCursor ' "$log" \
+  || ! grep -q '^--- PASS: TestWatchRevisionsReturnsStreamedErrors ' "$log" \
+  || ! grep -q '^--- PASS: TestServingChainVerdict ' "$log" \
+  || ! grep -q '^--- PASS: TestRateLimitVerdict ' "$log" \
+  || ! grep -q '^--- PASS: TestReadinessInitLogVerdict ' "$log" \
+  || ! grep -q '^--- PASS: TestTLSProbeJudgesListenerPolicy ' "$log" \
+  || ! grep -q '^--- PASS: TestCurlProbeFeedsTheSameJudge ' "$log" \
+  || ! grep -q '^--- PASS: TestRestrictedGapsJudgesShapes ' "$log" \
+  || ! grep -q '^--- PASS: TestPIIMatcherFlagsPlantedAndGeneric ' "$log" \
+  || ! grep -q '^--- PASS: TestLeaderPodOnceRejectsStaleLease ' "$log" \
+  || ! grep -q '^--- PASS: TestRaxLedgerHeldNeedsTheAuthority ' "$log" \
+  || ! grep -q '^--- PASS: TestStaleNRTVerdict ' "$log" \
+  || ! grep -q '^--- PASS: TestStaleNRTFrozenCapacity ' "$log" \
+  || ! grep -q '^--- PASS: TestEveryCreateIsLabelled ' "$log" \
+  || ! grep -q '^--- PASS: TestSweepRestoresAndDeletesOnlyLabelled ' "$log" \
+  || ! grep -q '^--- PASS: TestPolicyIntentEditRetriesConflicts ' "$log"; then
+  red "pre-commit: a cluster-free e2e guard failed / did not run:"
+  tail -30 "$log"; exit 1
+fi
+
+# 4. generated-artifact drift — only if controller-gen is available (don't force
+#    every contributor to install it; CI/reviewers still catch it otherwise).
+#    Covers the CRDs + deepcopy (api/ changes) AND the RBAC/webhook baselines in
+#    deploy/generated/ (marker changes in internal/controller|webhook).
+if gen_changed; then
+  CG="$(go env GOPATH)/bin/controller-gen"
+  if [ -x "$CG" ]; then
+    info "pre-commit: api/ or RBAC/webhook markers changed — checking generated artifacts…"
+    make generate >"$log" 2>&1 || true
+    if ! git diff --quiet -- api/ deploy/cpu-pinning-operator/crds/ deploy/generated/; then
+      red "pre-commit: generated artifacts are stale after an api/ or marker change."
+      red "Run 'make generate' and stage the results (zz_generated.deepcopy.go + CRD YAMLs + deploy/generated/)."
+      git --no-pager diff --stat -- api/ deploy/cpu-pinning-operator/crds/ deploy/generated/
+      exit 1
+    fi
+  else
+    info "pre-commit: generated inputs changed but controller-gen not installed — skipping drift check (run 'make generate' manually)."
+  fi
+fi
+
+green "pre-commit: gofmt + vet + tests passed."

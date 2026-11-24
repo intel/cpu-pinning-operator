@@ -1,0 +1,44 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+# Trivy misconfig exceptions. Every entry needs a written reason in a comment above
+# it — an unexplained line here is how a real finding becomes invisible.
+#
+# This file can only silence a rule id, repository-wide: that is all the plain-text
+# format supports. The `trivy config` gate in .github/workflows/sec-iac.yml therefore
+# uses trivyignore.yaml instead, whose entries are pinned to a path — needed there
+# because that scan renders the vendored subchart too, and a rule tolerated for
+# upstream's DaemonSet would stop flagging our own manifests. The two files overlap on
+# KSV-0114 and must keep agreeing; the reasoning for it is written out below and
+# referenced, not duplicated, from the YAML file.
+
+# KSV-0114: "ClusterRole should not have access to mutatingwebhookconfigurations /
+# validatingwebhookconfigurations for verbs [create update patch delete ...]".
+#
+# Two roles trip it and both need a write verb to function:
+#   - cpu-pinning-operator-manager-role holds `patch` on the release's own
+#     mutatingwebhookconfiguration, pinned with resourceNames, because the
+#     BalloonPinningPolicy and BalloonsClusterConfig reconcilers rewrite the webhook's
+#     namespaceSelector and failurePolicy at runtime. Its get/list/watch on the
+#     resource are unscoped (the readiness-CA reconciler watches through the cache,
+#     and list/watch cannot be restricted by name) but are read-only.
+#   - cpu-pinning-operator-pre-delete holds `delete` on the release's own
+#     validatingwebhookconfiguration so uninstall does not leave a webhook behind
+#     that rejects every request against a controller that no longer exists.
+#
+# Two things this check does NOT respond to, both measured:
+#   - Swapping the verb does not help. `patch` fires just as `update` does,
+#     because its forbidden list is
+#     [create update patch delete deletecollection impersonate *] — every verb that
+#     can write. Only dropping write access entirely would satisfy it, and then the
+#     reconcilers cannot do their job.
+#   - Scoping does not help either. Both grants are restricted with resourceNames to
+#     one named object and both are still flagged, so the rule keys on the
+#     resource+verb pair alone.
+#
+# Accepted risk. Both write grants are already as narrow as the function allows (one
+# verb, one named object each); do not reopen this entry expecting a verb or
+# resourceNames change to clear it.
+AVD-KSV-0114
+KSV0114
+KSV-0114

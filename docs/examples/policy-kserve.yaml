@@ -1,0 +1,44 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# Reference BalloonPinningPolicy for KServe InferenceServices whose runtime may be
+# vLLM or SGLang.
+#
+# KServe names the predictor container `kserve-container` whatever runtime it runs,
+# so a policy cannot tell vLLM from SGLang by container name. It does not need to:
+# each intent argRegex lists both runtimes' flags as alternatives. `(?:^|\s)` anchors
+# a flag to the start of an argument, so a model path such as `/models/llama-tp=8`
+# is not read as `-tp=8`. Add a flag to the group to onboard a further runtime.
+#
+# Behavior:
+#   - Matches container `kserve-container` in namespace `inference`.
+#   - Span from `--tensor-parallel-size N` / `-tp N` (vLLM) or `--tp-size N` /
+#     `--tp N` (SGLang), or the pod annotation `cpu-pinning-operator.intel.com/tp`.
+#   - Multiplied by `--pipeline-parallel-size N` / `-pp N` (vLLM) or `--pp-size N`
+#     (SGLang), or the annotation `cpu-pinning-operator.intel.com/multiplier`;
+#     snaps to {1,2,4,8}.
+#   - Prefers AMX-capable nodes, like policy-vllm.yaml and policy-sglang.yaml.
+apiVersion: cpu-pinning-operator.intel.com/v1alpha1
+kind: BalloonPinningPolicy
+metadata:
+  name: kserve
+spec:
+  match:
+    byContainerName: [kserve-container]
+  namespaces: [inference]
+  intent:
+    span:
+      annotation: cpu-pinning-operator.intel.com/tp
+      argRegex: '(?:^|\s)(?:--tensor-parallel-size|--tp-size|--tp|-tp)(?:=|\s+)(\d+)'
+      default: 1
+    multiplier:
+      annotation: cpu-pinning-operator.intel.com/multiplier
+      argRegex: '(?:^|\s)(?:--pipeline-parallel-size|--pp-size|-pp)(?:=|\s+)(\d+)'
+      default: 1
+  capacityCheck:
+    mode: warn
+  scheduling:
+    enforcePinning: true
+    nodeFeatures:
+      cpu-pinning-operator.intel.com/amx: prefer
+  driftPolicy: eventsOnly

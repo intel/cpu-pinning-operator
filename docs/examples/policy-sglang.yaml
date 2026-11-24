@@ -1,0 +1,36 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# Reference BalloonPinningPolicy for SGLang inference workloads.
+#
+# Demonstrates the whole point of the generic intent contract: onboarding a
+# non-vLLM runtime is a policy edit, not a Go release. SGLang uses `--tp-size`
+# where vLLM uses `--tensor-parallel-size`: the span flag differs from the vLLM
+# policy, and the annotation, env var and multiplier sources are left out. Ship this in parallel with policy-vllm.yaml — the two match
+# disjoint container names, so both can be active in the same namespace. Under
+# KServe both runtimes run in `kserve-container`; use policy-kserve.yaml there.
+#
+# Behavior:
+#   - Matches container `sglang` in namespace `inference`.
+#   - Reads the balloon span from `--tp-size N` in container args (SGLang's
+#     tensor-parallel flag). No pipeline-parallel dimension by default.
+#   - Same AMX preference and enforce-pinning as the vLLM example.
+apiVersion: cpu-pinning-operator.intel.com/v1alpha1
+kind: BalloonPinningPolicy
+metadata:
+  name: sglang
+spec:
+  match:
+    byContainerName: [sglang]
+  namespaces: [inference]
+  intent:
+    span:
+      argRegex: '(?:^|\s)--tp-size(?:=|\s+)(\d+)'
+      default: 1
+  capacityCheck:
+    mode: warn
+  scheduling:
+    enforcePinning: true
+    nodeFeatures:
+      cpu-pinning-operator.intel.com/amx: prefer
+  driftPolicy: eventsOnly

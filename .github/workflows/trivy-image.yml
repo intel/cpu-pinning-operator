@@ -1,0 +1,189 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+name: trivy-image
+
+on:
+  pull_request:
+  schedule:
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  TRIVY_IMAGE: aquasec/trivy:0.69.3
+
+jobs:
+  build-and-scan:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Build operator image
+        run: docker build -t localhost/cpu-pinning-operator:${{ github.sha }} .
+
+      - name: Export image to tarball
+        run: docker save localhost/cpu-pinning-operator:${{ github.sha }} -o "$RUNNER_TEMP/image.tar"
+
+      - name: Trivy image scan (fixable HIGH,CRITICAL — gate)
+        run: |
+          docker run --rm \
+            -v "$RUNNER_TEMP:$RUNNER_TEMP" \
+            "$TRIVY_IMAGE" image \
+              --input "$RUNNER_TEMP/image.tar" \
+              --scanners vuln \
+              --severity HIGH,CRITICAL \
+              --ignore-unfixed \
+              --exit-code 1 \
+              --skip-version-check
+
+      # Trivy prints no scanned-file count, and both filesystem passes below are
+      # --exit-code 0, so their output reads the same whether they walked the tree or
+      # walked an empty directory. State the size of the scan root once, ahead of both,
+      # and fail if it is empty — the same guard as the rendered-chart gate further down,
+      # which fails on a manifest count of 0 so that a renamed template directory cannot
+      # turn it into a silent no-op. The count only proves there was something to read;
+      # what Trivy made of it is still its own output's business.
+      - name: Check the filesystem scan root is not empty
+        if: ${{ always() }}
+        run: |
+          scanned="$(find . -path ./.git -prune -o -type f -print | wc -l)"
+          echo "filesystem scan root: $scanned files, excluding .git"
+          if [ "$scanned" -lt 1 ]; then
+            echo "::error::the scan root holds no files, so the filesystem passes would report clean without having read anything."
+            exit 1
+          fi
+
+      - name: Trivy filesystem scan (deps, secrets — report)
+        if: ${{ always() }}
+        run: |
+          # Whole repo, no exclusions: neither scanner needs the chart rendered, so the
+          # chart directory keeps secret coverage (a token pasted into values.yaml) and
+          # dependency coverage. Kept separate from the misconfig pass below because
+          # --skip-dirs applies to the whole invocation, not to one scanner — folding
+          # them together and skipping the chart would silently drop these two for it.
+          docker run --rm \
+            -v "$PWD:/src" -w /src \
+            "$TRIVY_IMAGE" fs \
+              --scanners vuln,secret \
+              --severity HIGH,CRITICAL \
+              --exit-code 0 \
+              --skip-version-check \
+              .
+
+      - name: Trivy filesystem scan (misconfig outside the chart — report)
+        if: ${{ always() }}
+        run: |
+          # misconfig for everything the chart does not own — Dockerfile,
+          # deploy/generated/*.yaml, deploy/examples/**. The chart itself is skipped
+          # because Trivy's own render gets no values here and the chart fails to
+          # render without a policy target; the gate below scans it from rendered output. Do not delete this step
+          # in favour of the gate: the gate only ever looks at the rendered chart.
+          docker run --rm \
+            -v "$PWD:/src" -w /src \
+            "$TRIVY_IMAGE" fs \
+              --scanners misconfig \
+              --severity HIGH,CRITICAL \
+              --exit-code 0 \
+              --skip-version-check \
+              --skip-dirs deploy/cpu-pinning-operator \
+              .
+
+      - name: Set up Helm
+        if: ${{ always() }}
+        uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e # v4
+        with:
+          version: v3.17.3
+
+      - name: Render Helm chart
+        id: render-chart
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          # No dependency resolution: the two subcharts are committed under
+          # deploy/cpu-pinning-operator/charts/, so the render reads them out of the
+          # checkout. Fetching them from charts.jetstack.io and containers.github.io
+          # would let an outage at either fail this step and skip the gate below it.
+          # Do not add a fetch here; if a subchart archive is missing helm fails this
+          # step loudly rather than rendering a chart with a dependency silently
+          # absent.
+          mkdir -p "$RUNNER_TEMP/rendered"
+          # --namespace is pinned: without it helm inherits whatever namespace the
+          # runner's kube context happens to point at, which makes the rendered output —
+          # and therefore the scan findings — depend on the runner rather than on the
+          # chart, and puts the runner's own namespace name in the scan report.
+          # The chart refuses to render without a policy target; scan the worked example.
+          helm template cpu-pinning-operator deploy/cpu-pinning-operator \
+            --namespace cpu-pinning-operator-system \
+            -f docs/examples/values/kserve.yaml \
+            --output-dir "$RUNNER_TEMP/rendered"
+
+      - name: Trivy Helm chart misconfig scan (gate)
+        # Skipped only when the render failed — that step has already failed the job, so
+        # nothing is silently unscanned here.
+        if: ${{ always() && steps.render-chart.outcome == 'success' }}
+        run: |
+          # Gates on this chart's OWN templates. The rendered tree also holds the
+          # nri-resource-policy-balloons subchart (enabled by default), under
+          # charts/<name>/templates/ — upstream's manifests, which mount a hostPath and
+          # set no runAsNonRoot. Gating on those would hold this red permanently, and
+          # silencing them would have to be done by rule id in .trivyignore, which is
+          # global: tolerating KSV023 for the subchart would stop flagging a hostPath WE
+          # add. So they are reported in the step below instead of gated here — visible,
+          # not dropped.
+          set -euo pipefail
+          # Fail if there is nothing to scan. Trivy prints nothing and exits 0 both when
+          # a scan is clean and when it was pointed at an empty or wrong path, so without
+          # this a renamed template dir would turn the gate into a no-op that reports
+          # success.
+          # Checked before find, which under `set -e` would otherwise abort on a missing
+          # directory with a bare "No such file or directory" — the same failure, minus
+          # the reason for it.
+          test -d "$RUNNER_TEMP/rendered/cpu-pinning-operator/templates" || {
+            echo "::error::rendered/cpu-pinning-operator/templates is missing — did helm's output layout change?"
+            exit 1; }
+          manifests=$(find "$RUNNER_TEMP/rendered/cpu-pinning-operator/templates" -name '*.yaml' | wc -l)
+          echo "misconfig gate: scanning $manifests rendered manifests"
+          test "$manifests" -gt 0
+          # --ignorefile is passed explicitly: the scan runs with -w $RUNNER_TEMP, so
+          # Trivy would not find the repo's .trivyignore on its own.
+          docker run --rm \
+            -v "$RUNNER_TEMP:$RUNNER_TEMP" -v "$PWD:/src:ro" -w "$RUNNER_TEMP" \
+            "$TRIVY_IMAGE" fs \
+              --scanners misconfig \
+              --severity HIGH,CRITICAL \
+              --exit-code 1 \
+              --skip-version-check \
+              --ignorefile /src/.trivyignore \
+              rendered/cpu-pinning-operator/templates
+
+      - name: Trivy rendered subchart misconfig scan (report)
+        # Covers what the gate above deliberately leaves out: the rendered subcharts,
+        # which this chart ships (nri-resource-policy-balloons is enabled by default) but
+        # does not author. Report-only, so upstream's hostPath and missing runAsNonRoot
+        # stay visible without either blocking the merge or forcing a global rule
+        # suppression that would blunt the gate for our own manifests.
+        if: ${{ always() && steps.render-chart.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          test -d "$RUNNER_TEMP/rendered/cpu-pinning-operator/charts" || {
+            echo "no rendered subcharts — nothing to report"; exit 0; }
+          subcharts=$(find "$RUNNER_TEMP/rendered/cpu-pinning-operator/charts" -name '*.yaml' | wc -l)
+          echo "subchart report: scanning $subcharts rendered manifests"
+          docker run --rm \
+            -v "$RUNNER_TEMP:$RUNNER_TEMP" -w "$RUNNER_TEMP" \
+            "$TRIVY_IMAGE" fs \
+              --scanners misconfig \
+              --severity HIGH,CRITICAL \
+              --exit-code 0 \
+              --skip-version-check \
+              rendered/cpu-pinning-operator/charts

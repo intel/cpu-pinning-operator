@@ -1,0 +1,10 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+# The backlog lives in GitHub Issues; steer ad-hoc reports to the task template
+# but don't force it (blank issues remain allowed for quick bugs).
+blank_issues_enabled: true
+contact_links:
+  - name: Contributing guide & workflow
+    url: https://github.com/intel/cpu-pinning-operator/blob/main/CONTRIBUTING.md
+    about: How to report issues, build and test, and what a pull request must contain.

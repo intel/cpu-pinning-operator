@@ -1,0 +1,11 @@
+go test fuzz v1
+string("0")
+string("0")
+string("0")
+string("0")
+string("0")
+string("1")
+string("0")
+int(91)
+int(-19)
+int64(1073741824)

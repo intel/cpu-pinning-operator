@@ -1,0 +1,29 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+
+# Git history (security: avoid leaking credentials/history)
+.git/
+.gitignore
+
+# Assistant skill docs (not build input)
+.claude/
+
+# GitHub workflows and issue templates
+.github/
+
+# CI/test artifacts
+allure-results/
+allure-report/
+bin/
+*.test
+*.out
+
+# Documentation
+docs/
+README.md
+*.md
+
+# Build artifacts and temporary files
+.DS_Store
+*.swp
+*~

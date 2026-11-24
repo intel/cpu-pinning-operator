@@ -1,0 +1,39 @@
+# Copyright (C) 2026 Intel Corporation
+# SPDX-License-Identifier: Apache-2.0
+#
+# EXAMPLE Gatekeeper Constraint — binds the RestrictPinningConfigMutation
+# template (see constrainttemplate-restrict-bcc-bpp-mutation.yaml) to the two
+# cpu-pinning-operator CRDs and names the principals that ARE allowed to mutate
+# them.
+#
+# CUSTOMIZE BEFORE APPLYING
+# -------------------------
+#   * `allowedGroups`  — REPLACE `platform-admins` with your real platform-admin
+#                        group (an OIDC group, etc.).
+#   * `allowedUsers`   — the entry below exempts the operator's own
+#                        ServiceAccount so its reconcilers and the shipped
+#                        default objects keep working. It matches the default
+#                        install (`cpu-pinning-operator` in
+#                        `cpu-pinning-operator-system`). Adjust if you overrode
+#                        fullnameOverride / the release namespace.
+#
+# Apply the ConstraintTemplate FIRST (Gatekeeper must register the CRD before
+# this Constraint can be created), then this file.
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: RestrictPinningConfigMutation
+metadata:
+  name: restrict-bcc-bpp-mutation
+spec:
+  enforcementAction: deny
+  match:
+    kinds:
+      - apiGroups:
+          - cpu-pinning-operator.intel.com
+        kinds:
+          - BalloonsClusterConfig
+          - BalloonPinningPolicy
+  parameters:
+    allowedGroups:
+      - platform-admins
+    allowedUsers:
+      - system:serviceaccount:cpu-pinning-operator-system:cpu-pinning-operator
