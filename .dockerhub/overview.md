@@ -9,7 +9,7 @@ Kubernetes operator that gives the pods you choose dedicated, NUMA-local CPU cor
 * **More from existing hardware** - Higher utilisation and lower cost per request, without buying more servers.
 * **Predictable performance** - Important workloads get dedicated cores, kept apart from other pods; host processes and interrupts are not isolated.
 * **No application changes** - Install once, choose what to prioritise, see the result on a live dashboard.
-* **Works where you already run** - Kubernetes and Red Hat® OpenShift® (tested on 4.22.4).
+* **Works where you already run** - Kubernetes and Red Hat® OpenShift®.
 
 ## 🔍 Overview
 
