@@ -27,7 +27,7 @@ The image is deployed by the operator's Helm chart; it is not meant to be run on
 git clone https://github.com/intel/cpu-pinning-operator.git && cd cpu-pinning-operator
 helm install cpu-pinning-operator ./deploy/cpu-pinning-operator \
   -n cpu-pinning-operator-system --create-namespace \
-  --set 'balloonPinningPolicy.match.byContainerName={<container-example>}' \
+  --set 'balloonPinningPolicy.match.byContainerName={<comma-separated-container-names>}' \
   --set 'balloonPinningPolicy.namespaces={<workload-namespace>}'
 ```
 
