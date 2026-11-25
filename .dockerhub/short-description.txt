@@ -1,0 +1,1 @@
+Kubernetes operator that gives selected pods dedicated, NUMA-local Intel® Xeon® CPU cores

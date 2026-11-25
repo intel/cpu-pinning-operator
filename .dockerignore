@@ -12,6 +12,9 @@ skills/
 # GitHub workflows and issue templates
 .github/
 
+# Docker Hub repository descriptions (set on Docker Hub, not image content)
+.dockerhub/
+
 # CI/test artifacts
 allure-results/
 allure-report/
