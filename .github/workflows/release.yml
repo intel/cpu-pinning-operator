@@ -113,9 +113,6 @@ jobs:
     permissions:
       contents: read
       id-token: write # keyless cosign attestation
-    # The image is written out, not passed as a job output: GitHub drops any output
-    # that contains a secret's value, and the image name does. Keep it equal to
-    # IMAGE_REGISTRY/IMAGE_NAME above.
     env:
       REF: docker.io/intel/cpu-pinning-operator@${{ needs.container.outputs.digest }}
     steps:
@@ -158,7 +155,6 @@ jobs:
     # Referenced by tag, not SHA: the generator verifies its own ref and fails otherwise.
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0
     with:
-      # Written out for the same reason as the sbom job's REF.
       image: docker.io/intel/cpu-pinning-operator
       digest: ${{ needs.container.outputs.digest }}
     secrets:
