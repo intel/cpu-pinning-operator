@@ -29,7 +29,7 @@ env:
   IMAGE_NAME: intel/cpu-pinning-operator
 
 jobs:
-  # Builds the image, pushes it, signs it, and outputs the repository and digest.
+  # Builds the image, pushes it, signs it, and outputs the digest.
   container:
     if: github.repository == 'intel/cpu-pinning-operator'
     runs-on: ubuntu-24.04
@@ -38,7 +38,6 @@ jobs:
       contents: read
       id-token: write # keyless cosign signature
     outputs:
-      image: ${{ steps.image.outputs.image }}
       digest: ${{ steps.build.outputs.digest }}
     steps:
       - name: Checkout
@@ -105,11 +104,6 @@ jobs:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: cosign sign --yes "${IMAGE_REGISTRY}/${IMAGE_NAME}@${DIGEST}"
 
-      - name: Output image
-        id: image
-        # The env context is not available to the inputs of a reusable workflow call.
-        run: echo "image=${IMAGE_REGISTRY}/${IMAGE_NAME}" >> "$GITHUB_OUTPUT"
-
   # Generates an SPDX SBOM of the published image and attests it.
   sbom:
     needs: [container]
@@ -119,8 +113,11 @@ jobs:
     permissions:
       contents: read
       id-token: write # keyless cosign attestation
+    # The image is written out, not passed as a job output: GitHub drops any output
+    # that contains a secret's value, and the image name does. Keep it equal to
+    # IMAGE_REGISTRY/IMAGE_NAME above.
     env:
-      REF: ${{ needs.container.outputs.image }}@${{ needs.container.outputs.digest }}
+      REF: docker.io/intel/cpu-pinning-operator@${{ needs.container.outputs.digest }}
     steps:
       - name: Generate container SBOM
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -161,7 +158,8 @@ jobs:
     # Referenced by tag, not SHA: the generator verifies its own ref and fails otherwise.
     uses: slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0
     with:
-      image: ${{ needs.container.outputs.image }}
+      # Written out for the same reason as the sbom job's REF.
+      image: docker.io/intel/cpu-pinning-operator
       digest: ${{ needs.container.outputs.digest }}
     secrets:
       registry-username: ${{ secrets.DOCKERHUB_USERNAME }}
